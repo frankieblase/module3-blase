@@ -26,14 +26,14 @@ Carbon, NCP, and population are pulled over the network each time you run the pu
 
 ## Getting started
 
-1. Open [`module3.Rproj`](module3.Rproj) in RStudio.
-2. Open [`module3.qmd`](module3.qmd).
-3. Install the required packages if you do not already have them.
-4. Restart R, then work through the document from the beginning.
+1.  Open [`module3.Rproj`](module3.Rproj) in RStudio.
+2.  Open [`module3.qmd`](module3.qmd).
+3.  Install the required packages if you do not already have them.
+4.  Restart R, then work through the document from the beginning.
 
 Required R packages:
 
-```r
+``` r
 install.packages(c(
   "terra", "sf", "dplyr", "tidyr", "ggplot2",
   "rnaturalearth",
@@ -51,7 +51,7 @@ Work with a partner, switching who drives every 10-15 minutes and before each ne
 
 Use RStudio's **Render** button, or run:
 
-```sh
+``` sh
 quarto render module3.qmd
 ```
 

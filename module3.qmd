@@ -22,10 +22,10 @@ Work with a partner. Switch who codes occasionally and practice git commands and
 
 The EU and Switzerland have both committed to protecting 30% of land by 2030. An optimizer can tell you which 30%, but only after you tell it what to protect *for*. In this module you will:
 
-1. Load three global layers and **clip them to Europe** (Switzerland included) (you write this part).
-2. Build four conservation plans, each protecting 30% of the land and maximising a different benefit: species richness, carbon, nature's contributions to people (NCP), or all three together.
-3. Ask who is inside each plan: **how many people** live in the protected land, and **which countries** are you solutions in.
-4. Optionally, explore **burden sharing** between countries, and take into account what is **already protected**.
+1.  Load three global layers and **clip them to Europe** (Switzerland included) (you write this part).
+2.  Build four conservation plans, each protecting 30% of the land and maximising a different benefit: species richness, carbon, nature's contributions to people (NCP), or all three together.
+3.  Ask who is inside each plan: **how many people** live in the protected land, and **which countries** are you solutions in.
+4.  Optionally, explore **burden sharing** between countries, and take into account what is **already protected**.
 
 ## Setup
 
@@ -48,7 +48,7 @@ setGDALconfig(c("GDAL_HTTP_TIMEOUT=60", "GDAL_HTTP_MAX_RETRY=3", "GDAL_HTTP_RETR
 The layers:
 
 | Layer | What it is | Where it lives |
-|---|---|---|
+|------------------------|------------------------|------------------------|
 | `richness` | Combined IUCN species richness, 10 km, World Mollweide | local file in `data/` |
 | `carbon` | Irrecoverable carbon (Noon et al. 2022) | cloud-optimised GeoTIFF, lon/lat |
 | `ncp` | Number of nature's contributions to people a place ranks highly for, 0-19 (Chaplin-Kramer et al. 2019) | cloud-optimised GeoTIFF, lon/lat |
@@ -88,7 +88,8 @@ bbox
 #| eval: false
 richness_global <- rast("data/Combined_SR_2025.tif")
 
-europe_proj <- ___   # europe -> transform to crs(richness_global) -> vect
+#next chunk
+europe_proj <-    # europe -> transform to crs(richness_global) -> vect
 richness <- crop(___, ___)
 names(richness) <- "richness"
 ```
@@ -155,6 +156,20 @@ plot(carbon)
 The overview pixels are about 1 km and our cells are 10 km, so we are *aggregating*, not interpolating. `method = "bilinear"` reads only the four pixels nearest each cell centre, so a cell becomes `NA` if that one spot is a lake or a town. `"average"` uses every pixel in the cell and ignores `NA`s.
 :::
 
+```{r}
+
+#carbon_cog <- rast("/vsicurl/https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif",
+ #                  opts = "OVERVIEW_LEVEL=1")
+ carbon_cog_coop <- rast("/vsicurl/https://data.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif",
+                    opts = "OVERVIEW_LEVEL=1")
+
+carbon_window_coop <- crop(carbon_cog, ext(bbox[c("xmin", "xmax", "ymin", "ymax")]))
+carbon_coop <- project(carbon_window, richness, method = "average")
+names(carbon_coop) <- "carbon"
+plot(carbon_coop)
+#results in exactly the same map, the data is the same just coming from different cloud hosts
+```
+
 ## 4. NCP: the same recipe
 
 NCP comes as a cloud-optimised GeoTIFF too, in the same Source Cooperative folder (`ncp/NCP_only_4326_cog.tif`, a score from 0 to 19 in lon/lat, about 2 km pixels). It is small enough that we do not need an overview. This is the carbon recipe again, so it is given: open lazily, crop, then `project()` onto the richness grid.
@@ -171,9 +186,9 @@ plot(ncp)
 ```
 
 ::: {.callout-note title="Questions"}
-1. Why `"average"` again? What would `"sum"` do to a *score*, and why would that be wrong here (and right for something like a head count)?
-2. Where are the holes in the map? Check how many land cells are `NA` and which countries they are in. Is "no data" the same thing as "no NCP"?
-3. We are about to turn missing values into 0. What does that assume about NCP in those cells, and who could be affected?
+1.  Why `"average"` again? What would `"sum"` do to a *score*, and why would that be wrong here (and right for something like a head count)?
+2.  Where are the holes in the map? Check how many land cells are `NA` and which countries they are in. Is "no data" the same thing as "no NCP"?
+3.  We are about to turn missing values into 0. What does that assume about NCP in those cells, and who could be affected?
 :::
 
 ## 5. Stack, then clip to the *countries*
@@ -207,6 +222,7 @@ grid <- c(richness, fill0(carbon), fill0(ncp))
 grid <- mask(grid, europe_proj, touches = FALSE)
 
 writeRaster(grid, "cache/europe_grid.tif", overwrite = TRUE)
+
 ```
 
 `touches = FALSE` keeps a cell only if its centre is inside a country, so sea cells that merely graze the coast are dropped.
@@ -243,10 +259,10 @@ Rescaling does not make the layers equal, and it is a choice, not a neutral step
 
 ## carbon alone
 
-We set the problem up in `prioritizr` the way you would describe it in words: *choose the cells that hold the most carbon, without protecting more than 30% of the land.* In code that sentence has five parts, and each one is a line (or two) below:
+We set the problem up in `prioritizr` the way you would describe it in words: *choose the cells that hold the most carbon, without protecting more than 30% of the land.* In code that sentence has five parts, and each one is a line (or two) below:\
 
 | Part | Question it answers | In the code below |
-|---|---|---|
+|------------------------|------------------------|------------------------|
 | Planning units and cost | What can we choose from, and what does each cell cost? | `problem(uniform_cost, ...)`: every non-`NA` cell is a planning unit |
 | Features | What do we want to protect? | `features = carbon_01` |
 | Objective | What do we maximise, and under what budget? | `add_max_wtd_sum_objective(budget = budget_cells)` |
@@ -273,7 +289,7 @@ carbon_01 <- stretch(grid[["carbon"]], minv = 0, maxv = 1)
 
 # THE PROBLEM (nothing is solved yet; this only describes it)
 p_carbon <- problem(uniform_cost, features = carbon_01) |>      # cells to choose from + what to protect
-  add_max_wtd_sum_objective(budget = budget_cells) |>   # maximise the summed feature value, within the budget
+  add_max_utility_objective(budget = budget_cells) |>   # maximise the summed feature value, within the budget
   add_binary_decisions() |>                             # each cell is protected (1) or not (0), never partly
   add_default_solver(gap = 0, verbose = FALSE)          # gap = 0: demand the exact best answer, not "within 10%"
 
@@ -312,9 +328,9 @@ plot(sol_richness_carbon, col = c("grey90", "darkgreen"), main = "Richness and c
 ::: {.callout-note title="Stop and think"}
 Look back at the two chunks above. Which lines did you copy and paste, and which lines changed? Now imagine you also want NCP, a 10% budget, unequal weights, and a plan that locks in existing protected areas, and you want to compare a dozen of these.
 
-1. What are the things that vary between plans? Those are the arguments.
-2. What stays the same? That is the body.
-3. What would go wrong if you kept copying and pasting (and fixed a bug in only one copy)?
+1.  What are the things that vary between plans? Those are the arguments.
+2.  What stays the same? That is the body.
+3.  What would go wrong if you kept copying and pasting (and fixed a bug in only one copy)?
 
 Sketch the function you would write before you read ours below.
 :::
@@ -349,7 +365,6 @@ make_plan <- function(...) solve(make_problem(...), force = TRUE)
 ```
 
 Two functions rather than one: `make_problem()` builds the problem and `make_plan()` solves it. Why might it be useful to keep those separate? (Extension A hints at one reason.)
-
 
 ```{r}
 #| label: plans
@@ -412,12 +427,12 @@ summary_table |> mutate(across(-plan, ~ round(.x, 2)))
 # Your turn
 
 ::: {.callout-note title="Tasks"}
-1. Look at Plan 4, which gives every layer the same weight. Does it hold about the same share of richness, carbon and NCP? Why not? (*Hint:* compare how the three layers are distributed; the plots above are a start, and so is the note on rescaling.) Which layer is a 30% budget most and least efficient for?
-2. In Plan 4, change the weights (try `richness = 3`, then `ncp = 3`). Which layer moves the map most? Was that what you expected?
-3. Change `budget` to 0.1 and 0.5. Is the gain from protecting more land steady or does it flatten out?
-4. Swap `data/Amphibians_RWR_2025.tif` in as the richness layer (same grid, same crop and mask code). It upweights small-range species. How do Plans 1 and 4 change?
-5. Invent a planning group (a national park agency, the farmers' union, a tourism board). Choose its weights, write one sentence on why, run `make_plan()`, and add it to the table.
-6. Compare rescaling choices for the all-three plan: (a) raw values, (b) 0-1 as above, (c) each layer divided by its Europe-wide total. Build each version of `features` yourself, solve, and compare the share of each layer held and how many cells differ. Which layer wins under each? Which would you defend to a planning group, and why?
+1.  Look at Plan 4, which gives every layer the same weight. Does it hold about the same share of richness, carbon and NCP? Why not? (*Hint:* compare how the three layers are distributed; the plots above are a start, and so is the note on rescaling.) Which layer is a 30% budget most and least efficient for?
+2.  In Plan 4, change the weights (try `richness = 3`, then `ncp = 3`). Which layer moves the map most? Was that what you expected?
+3.  Change `budget` to 0.1 and 0.5. Is the gain from protecting more land steady or does it flatten out?
+4.  Swap `data/Amphibians_RWR_2025.tif` in as the richness layer (same grid, same crop and mask code). It upweights small-range species. How do Plans 1 and 4 change?
+5.  Invent a planning group (a national park agency, the farmers' union, a tourism board). Choose its weights, write one sentence on why, run `make_plan()`, and add it to the table.
+6.  Compare rescaling choices for the all-three plan: (a) raw values, (b) 0-1 as above, (c) each layer divided by its Europe-wide total. Build each version of `features` yourself, solve, and compare the share of each layer held and how many cells differ. Which layer wins under each? Which would you defend to a planning group, and why?
 :::
 
 # Exercise: how many people?
@@ -462,9 +477,9 @@ sapply(plans, \(sol) global(sol * grid[["population"]], "sum", na.rm = TRUE)[[1]
 :::
 
 ::: {.callout-note title="Questions"}
-1. Which plan has the most people inside it, and which the fewest? Population was never an objective, so is this a coincidence?
-2. What share of Europe's population is that, compared with the 30% of land? Who might welcome that, and who might object?
-3. Run `make_plan(richness = 1, carbon = 1, ncp = 1, population = 1)` (population as a fourth objective). How far does the map move, and what happens to the other three shares?
+1.  Which plan has the most people inside it, and which the fewest? Population was never an objective, so is this a coincidence?
+2.  What share of Europe's population is that, compared with the 30% of land? Who might welcome that, and who might object?
+3.  Run `make_plan(richness = 1, carbon = 1, ncp = 1, population = 1)` (population as a fourth objective). How far does the map move, and what happens to the other three shares?
 :::
 
 # Exercise: which countries?
@@ -501,9 +516,9 @@ country_burden(plans[["4. all three"]]) |>
 :::
 
 ::: {.callout-note title="Questions"}
-1. Plot the protected share by country for Plan 4. Is any country far above or below 30%? What is it about the layers that makes this happen?
-2. Do the four plans give the same ranking of countries? Which plan is most unequal?
-3. A cell is assigned by its centre. What does that do to small countries and to Switzerland's border?
+1.  Plot the protected share by country for Plan 4. Is any country far above or below 30%? What is it about the layers that makes this happen?
+2.  Do the four plans give the same ranking of countries? Which plan is most unequal?
+3.  A cell is assigned by its centre. What does that do to small countries and to Switzerland's border?
 :::
 
 # Exercise: is the optimizer neutral?
@@ -519,9 +534,9 @@ A single European plan is *efficient*: it picks the 30% that holds the most bene
 ::: {.callout-note title="Explore"}
 Design and compare at least two alternatives to the pooled plan (for example, every country protects its own 30%, or every country protects at least a minimum share), and measure what each one costs in richness, carbon and NCP. `make_problem()` returns the problem before it is solved, and `?add_linear_constraints` is a place to start.
 
-1. Which countries gain or lose under your rule compared with the pooled plan? Where does Switzerland sit?
-2. What is the "price" of fairness here, in benefit held?
-3. "Equal share of land" is one idea of fairness. Others: equal share of cost, share proportional to wealth or to benefits received, or credit for what a country has already protected. Pick one and say how you would encode it and what data you would need.
+1.  Which countries gain or lose under your rule compared with the pooled plan? Where does Switzerland sit?
+2.  What is the "price" of fairness here, in benefit held?
+3.  "Equal share of land" is one idea of fairness. Others: equal share of cost, share proportional to wealth or to benefits received, or credit for what a country has already protected. Pick one and say how you would encode it and what data you would need.
 :::
 
 # Optional extension B: what is already protected?
@@ -531,9 +546,9 @@ Every plan above starts from a blank map. In reality much of Europe is already p
 ::: {.callout-note title="Explore"}
 The [World Database on Protected Areas (WDPA)](https://www.protectedplanet.net/) holds the boundaries of existing protected areas, and the `wdpar` package can download and clean them. Rasterise them onto `grid`, work out how much of each layer is already held, and re-run your plans with those cells **locked in** (see `?add_locked_in_constraints`).
 
-1. Which layer is least represented in existing protection? Which countries have already done most of their share?
-2. How different is the plan once you build on what exists?
-3. Is a cell protected on paper actually protected? What does WDPA not tell you?
+1.  Which layer is least represented in existing protection? Which countries have already done most of their share?
+2.  How different is the plan once you build on what exists?
+3.  Is a cell protected on paper actually protected? What does WDPA not tell you?
 :::
 
 # Going further
