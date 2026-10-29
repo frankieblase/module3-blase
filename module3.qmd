@@ -1,0 +1,559 @@
+---
+title: "Spatial conservation planning"
+subtitle: "Richness, carbon, and nature's contributions to people"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-tools: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+
+**Prerequisites:** Module 1 (cloud-native rasters, `terra`, bounding boxes from country polygons). Familiarity with `prioritizr` is helpful (see the reading tutorial).
+
+::: {.callout-tip title="Peer programming"}
+Work with a partner. Switch who codes occasionally and practice git commands and collaborative coding!
+:::
+
+The EU and Switzerland have both committed to protecting 30% of land by 2030. An optimizer can tell you which 30%, but only after you tell it what to protect *for*. In this module you will:
+
+1. Load three global layers and **clip them to Europe** (Switzerland included) (you write this part).
+2. Build four conservation plans, each protecting 30% of the land and maximising a different benefit: species richness, carbon, nature's contributions to people (NCP), or all three together.
+3. Ask who is inside each plan: **how many people** live in the protected land, and **which countries** are you solutions in.
+4. Optionally, explore **burden sharing** between countries, and take into account what is **already protected**.
+
+## Setup
+
+```{r}
+#| label: setup
+library(terra)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(rnaturalearth)
+library(prioritizr)
+
+dir.create("cache", showWarnings = FALSE)
+
+# Remote reads should fail or retry rather than hang if the network stalls
+setGDALconfig(c("GDAL_HTTP_TIMEOUT=60", "GDAL_HTTP_MAX_RETRY=3", "GDAL_HTTP_RETRY_DELAY=2"))
+```
+
+The layers:
+
+| Layer | What it is | Where it lives |
+|---|---|---|
+| `richness` | Combined IUCN species richness, 10 km, World Mollweide | local file in `data/` |
+| `carbon` | Irrecoverable carbon (Noon et al. 2022) | cloud-optimised GeoTIFF, lon/lat |
+| `ncp` | Number of nature's contributions to people a place ranks highly for, 0-19 (Chaplin-Kramer et al. 2019) | cloud-optimised GeoTIFF, lon/lat |
+
+Population (GHS-POP 2020) is a fourth layer you pull yourself at the end. The last three layers are cloud-native files on [Source Cooperative](https://source.coop/cboettig): no account or key, just a lazy connection and a window read, like Module 1's satellite imagery.
+
+# Load and clip to Europe
+
+## 1. A polygon for Europe
+
+We want Europe's countries, with Switzerland as one of them, not a hand-typed box. A few judgement calls are already made here: Russia is dropped (most of it is far outside the layers' useful window), and the crop removes territories such as Svalbard. We could also clip this to the EU.
+
+```{r}
+#| label: europe-polygon
+# Planar geometry for the lon/lat crop below
+sf_use_s2(FALSE)
+
+europe <- ne_countries(scale = "medium", continent = "Europe", returnclass = "sf") |>
+  filter(name != "Russia") |>
+  st_make_valid() |>
+  st_crop(xmin = -25, xmax = 45, ymin = 34, ymax = 72)
+
+bbox <- st_bbox(europe)
+bbox
+```
+
+## 2. Richness: crop a local raster
+
+::: {.callout-note title="Your task"}
+`data/Combined_SR_2025.tif` is global, in World Mollweide (metres). Crop it to Europe and call the result `richness`, with the layer named `richness`. Then plot it.
+
+*Hint:* `europe` and `bbox` are in degrees. What happens if you crop a metres raster with degrees? Check `crs()` on both, and try it the naive way first so you see the failure.
+:::
+
+```{r}
+#| label: richness-task
+#| eval: false
+richness_global <- rast("data/Combined_SR_2025.tif")
+
+europe_proj <- ___   # europe -> transform to crs(richness_global) -> vect
+richness <- crop(___, ___)
+names(richness) <- "richness"
+```
+
+::: {.callout-note title="Solution" collapse="true"}
+```{r}
+#| label: richness-solution
+richness_global <- rast("data/Combined_SR_2025.tif")
+
+europe_proj <- europe |>
+  st_transform(crs(richness_global)) |>
+  vect()
+
+richness <- crop(richness_global, europe_proj)
+names(richness) <- "richness"
+```
+:::
+
+```{r}
+#| label: richness-plot
+plot(richness, main = "Combined species richness")
+```
+
+"Richness" counts IUCN-assessed species whose *range map* overlaps each cell. Range maps are plausible extents, not confirmed presences, and 10 km is coarse next to real habitat.
+
+## 3. Carbon: window-read a cloud-optimised GeoTIFF
+
+::: {.callout-note title="Your task"}
+The COG is at `https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif` (put `/vsicurl/` in front of the URL to open it lazily). The same file is also served at `https://data.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif`; if one address is slow or stalls, try the other. Open it, crop it to Europe's window, then get it onto the richness grid so the two stack.
+
+*Hints:*
+
+- The file is global at about 300 m, so a full-resolution read of Europe is hundreds of millions of pixels. A COG stores pre-computed coarser **overviews**: `rast(path, opts = "OVERVIEW_LEVEL=1")` opens a level that is 4 times coarser (try 0 to 4: how does speed change?).
+- The COG is in lon/lat. `resample()` assumes two rasters already share a CRS and silently returns all `NA` when they don't, so use `project()`.
+- `project()`'s `method` matters: your cells are much wider than the source pixels, so pick the method for *aggregating* (see `?project`), then plot it and look for speckled holes.
+- Check `global(carbon, "max", na.rm = TRUE)` to confirm you didn't get an empty raster.
+:::
+
+```{r}
+#| label: carbon-task
+#| eval: false
+carbon_cog <- rast("___", opts = "OVERVIEW_LEVEL=1")
+
+carbon_window <- crop(___, ext(___))
+carbon <- project(___, ___, method = ___)
+names(carbon) <- "carbon"
+```
+
+::: {.callout-note title="Solution" collapse="true"}
+```{r}
+#| label: carbon-solution
+# Source Cooperative serves the same file at two addresses; use whichever is faster for you
+carbon_cog <- rast("/vsicurl/https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif",
+                   opts = "OVERVIEW_LEVEL=1")
+# carbon_cog <- rast("/vsicurl/https://data.source.coop/cboettig/carbon/v2/cogs/irrecoverable_c_total_2024.tif",
+#                    opts = "OVERVIEW_LEVEL=1")
+
+carbon_window <- crop(carbon_cog, ext(bbox[c("xmin", "xmax", "ymin", "ymax")]))
+carbon <- project(carbon_window, richness, method = "average")
+names(carbon) <- "carbon"
+plot(carbon)
+```
+
+The overview pixels are about 1 km and our cells are 10 km, so we are *aggregating*, not interpolating. `method = "bilinear"` reads only the four pixels nearest each cell centre, so a cell becomes `NA` if that one spot is a lake or a town. `"average"` uses every pixel in the cell and ignores `NA`s.
+:::
+
+## 4. NCP: the same recipe
+
+NCP comes as a cloud-optimised GeoTIFF too, in the same Source Cooperative folder (`ncp/NCP_only_4326_cog.tif`, a score from 0 to 19 in lon/lat, about 2 km pixels). It is small enough that we do not need an overview. This is the carbon recipe again, so it is given: open lazily, crop, then `project()` onto the richness grid.
+
+```{r}
+#| label: ncp
+ncp_cog <- rast("/vsicurl/https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/ncp/NCP_only_4326_cog.tif")
+# ncp_cog <- rast("/vsicurl/https://data.source.coop/cboettig/ncp/NCP_only_4326_cog.tif")
+
+ncp_window <- crop(ncp_cog, ext(bbox[c("xmin", "xmax", "ymin", "ymax")]))
+ncp <- project(ncp_window, richness, method = "average")
+names(ncp) <- "ncp"
+plot(ncp)
+```
+
+::: {.callout-note title="Questions"}
+1. Why `"average"` again? What would `"sum"` do to a *score*, and why would that be wrong here (and right for something like a head count)?
+2. Where are the holes in the map? Check how many land cells are `NA` and which countries they are in. Is "no data" the same thing as "no NCP"?
+3. We are about to turn missing values into 0. What does that assume about NCP in those cells, and who could be affected?
+:::
+
+## 5. Stack, then clip to the *countries*
+
+`crop()` takes a rectangle, so `grid` still holds sea, North Africa, and Turkey. A planner must not "protect" them. Two decisions:
+
+- **Missing values on land:** treat missing carbon or NCP (lakes, glaciers, thin coverage) as 0 rather than dropping the cell.
+- **Outside Europe's countries:** these cells must be `NA`, *not* 0, so the optimizer cannot select them.
+
+::: {.callout-note title="Your task"}
+Stack the three layers into one `grid` (starting from `richness`, so the chunk is safe to re-run), fill the missing values, then use `mask()` with the European polygon (`europe_proj`) to set everything outside to `NA`. Plot `grid` and count the cells that remain with `global(grid[["richness"]], "notNA")`.
+
+*Think:* why mask *after* filling the zeros rather than before? And `mask()` has a `touches` argument: which setting do you want for a coastline?
+:::
+
+```{r}
+#| label: assemble-task
+#| eval: false
+fill0 <- function(x) ifel(is.na(x), 0, x)
+
+grid <- c(richness, ___, ___)
+grid <- mask(grid, ___, touches = ___)
+```
+
+::: {.callout-note title="Solution" collapse="true"}
+```{r}
+#| label: assemble-solution
+fill0 <- function(x) ifel(is.na(x), 0, x)
+
+grid <- c(richness, fill0(carbon), fill0(ncp))
+grid <- mask(grid, europe_proj, touches = FALSE)
+
+writeRaster(grid, "cache/europe_grid.tif", overwrite = TRUE)
+```
+
+`touches = FALSE` keeps a cell only if its centre is inside a country, so sea cells that merely graze the coast are dropped.
+:::
+
+```{r}
+#| label: layers-plot
+plot(grid)
+```
+
+Each layer keeps its own units and legend.
+
+::: {.callout-note title="Exercise"}
+Before running anything: if you had to pick 30% of Europe, where would you protect? Write down a guess for each layer, then compare with the optimizer below.
+:::
+
+::: {.callout-tip title="Stuck or offline?"}
+`grid <- rast("cache/europe_grid.tif")` loads a finished copy (you will also need `europe_proj` and `richness` from the richness step).
+:::
+
+# Four plans
+
+There are no per-feature targets here. We fix a **budget** (protect 30% of the land) and ask `prioritizr` to pick the cells that give the **most benefit** for it. Every cell costs the same for now, so the budget is just 30% of the cells. "Benefit" is the sum of what the chosen cells hold, after each layer has been rescaled to run from 0 to 1.
+
+::: {.callout-note title="Why rescale each layer to 0-1?"}
+The objective *adds* the layers together, and the layers are in different units: richness averages about 247 species per cell, carbon about 14, NCP about 7. Added raw, richness would outweigh carbon roughly 17 to 1 before you have said anything about what matters. Rescaling each layer to 0-1 (its lowest cell becomes 0 and its highest becomes 1; `terra::stretch()` does this) puts them on one scale, so a weight of 2 means "twice as important" rather than "twice as important, times whatever the units happen to be".
+
+Rescaling does not make the layers equal, and it is a choice, not a neutral step:
+
+- It is set by the **extremes**. Carbon's highest cell is about 10 times its average, so most carbon cells end up close to 0 and carbon has less pull than its 0-1 scale suggests.
+- It depends on the **study area**: add or drop a country and the minimum and maximum move, and so does the plan.
+- Other choices exist (divide by the total, z-scores, ranks), and they give different plans. You can compare these if you are interested!
+:::
+
+## carbon alone
+
+We set the problem up in `prioritizr` the way you would describe it in words: *choose the cells that hold the most carbon, without protecting more than 30% of the land.* In code that sentence has five parts, and each one is a line (or two) below:
+
+| Part | Question it answers | In the code below |
+|---|---|---|
+| Planning units and cost | What can we choose from, and what does each cell cost? | `problem(uniform_cost, ...)`: every non-`NA` cell is a planning unit |
+| Features | What do we want to protect? | `features = carbon_01` |
+| Objective | What do we maximise, and under what budget? | `add_max_wtd_sum_objective(budget = budget_cells)` |
+| Decisions | Is a cell all in or all out? | `add_binary_decisions()` |
+| Solver | Which engine finds the answer? | `add_default_solver(...)` |
+
+```{r}
+#| label: plan-carbon
+# PLANNING UNITS AND COST
+# A raster with a 1 in every land cell and NA elsewhere. prioritizr treats each
+# non-NA cell as a planning unit and its value as the cost of protecting it.
+# Every cell costs the same for now, so "cost" just counts cells.
+uniform_cost <- ifel(is.na(grid[["richness"]]), NA, 1)
+names(uniform_cost) <- "cost"
+
+# BUDGET
+# 30% of the total cost = 30% of the land cells. This is the most we may protect.
+budget_cells <- 0.3 * global(uniform_cost, "sum", na.rm = TRUE)[[1]]
+
+# FEATURE
+# What we want to protect: carbon, rescaled so the lowest cell is 0 and the
+# highest is 1 (see the note above for why).
+carbon_01 <- stretch(grid[["carbon"]], minv = 0, maxv = 1)
+
+# THE PROBLEM (nothing is solved yet; this only describes it)
+p_carbon <- problem(uniform_cost, features = carbon_01) |>      # cells to choose from + what to protect
+  add_max_wtd_sum_objective(budget = budget_cells) |>   # maximise the summed feature value, within the budget
+  add_binary_decisions() |>                             # each cell is protected (1) or not (0), never partly
+  add_default_solver(gap = 0, verbose = FALSE)          # gap = 0: demand the exact best answer, not "within 10%"
+
+# SOLVE
+# force = TRUE: prioritizr flags single-feature problems as a likely mistake, and we want one here
+sol_carbon <- solve(p_carbon, force = TRUE)
+
+# The answer is a raster of 1s (protected) and 0s (not)
+plot(sol_carbon, col = c("grey90", "darkgreen"), main = "Carbon alone, 30% of the land")
+```
+
+Two things to check. How many cells did it protect (`global(sol_carbon, "sum", na.rm = TRUE)`), and is that 30% of the land cells? Then look at the map: does it match where the carbon layer is high?
+
+## richness and carbon
+
+Same thing, with a second layer. With two layers and no weights, each counts equally.
+
+```{r}
+#| label: plan-richness-carbon
+# A second feature, rescaled the same way
+richness_01 <- stretch(grid[["richness"]], minv = 0, maxv = 1)
+
+# Only the features change: two layers stacked with c(). Cost, budget, objective,
+# decisions and solver are exactly as before.
+p_richness_carbon <- problem(uniform_cost, features = c(richness_01, carbon_01)) |>
+  add_max_wtd_sum_objective(budget = budget_cells) |>   # now maximises richness + carbon, each counting equally
+  add_binary_decisions() |>
+  add_default_solver(gap = 0, verbose = FALSE)
+
+# No force = TRUE needed: there are two features now
+sol_richness_carbon <- solve(p_richness_carbon)
+
+plot(sol_richness_carbon, col = c("grey90", "darkgreen"), main = "Richness and carbon, 30% of the land")
+```
+
+::: {.callout-note title="Stop and think"}
+Look back at the two chunks above. Which lines did you copy and paste, and which lines changed? Now imagine you also want NCP, a 10% budget, unequal weights, and a plan that locks in existing protected areas, and you want to compare a dozen of these.
+
+1. What are the things that vary between plans? Those are the arguments.
+2. What stays the same? That is the body.
+3. What would go wrong if you kept copying and pasting (and fixed a bug in only one copy)?
+
+Sketch the function you would write before you read ours below.
+:::
+
+## Wrapping the steps in a function
+
+One answer: the layers and weights are the arguments, the budget and cost have defaults, and the body is the code you just wrote.
+
+```{r}
+#| label: make-plan
+# Weights say how much each layer counts; layers are rescaled to 0-1; the budget is a share of total cost.
+make_problem <- function(richness = 0, carbon = 0, ncp = 0, population = 0,
+                         budget = 0.3, cost = uniform_cost, locked_in = NULL) {
+  weights <- c(richness = richness, carbon = carbon, ncp = ncp, population = population)
+  weights <- weights[weights > 0]
+  stopifnot("give at least one layer a weight above 0" = length(weights) > 0)
+
+  features <- stretch(grid[[names(weights)]], minv = 0, maxv = 1)
+
+  p <- problem(cost, features = features) |>
+    add_max_wtd_sum_objective(budget = budget * global(cost, "sum", na.rm = TRUE)[[1]]) |>
+    add_feature_weights(unname(weights)) |>
+    add_binary_decisions() |>
+    add_default_solver(gap = 0, verbose = FALSE)
+
+  if (!is.null(locked_in)) p <- add_locked_in_constraints(p, locked_in)
+  p
+}
+
+# force = TRUE, as before, so single-layer plans are allowed
+make_plan <- function(...) solve(make_problem(...), force = TRUE)
+```
+
+Two functions rather than one: `make_problem()` builds the problem and `make_plan()` solves it. Why might it be useful to keep those separate? (Extension A hints at one reason.)
+
+
+```{r}
+#| label: plans
+plans <- list(
+  "1. richness"    = make_plan(richness = 1),
+  "2. carbon"      = make_plan(carbon = 1),
+  "3. NCP"         = make_plan(ncp = 1),
+  "4. all three"   = make_plan(richness = 1, carbon = 1, ncp = 1)
+)
+```
+
+Does the function reproduce the carbon plan you wrote by hand? This should be 0 (the number of cells that differ).
+
+```{r}
+#| label: check-function
+global(abs(plans[["2. carbon"]] - sol_carbon), "sum", na.rm = TRUE)[[1]]
+```
+
+```{r}
+#| label: plans-plot
+switzerland <- europe |> filter(name == "Switzerland") |> st_transform(crs(grid))
+
+plans |>
+  lapply(\(s) as.data.frame(setNames(s, "protected"), xy = TRUE)) |>
+  bind_rows(.id = "plan") |>
+  ggplot() +
+  geom_raster(aes(x, y, fill = factor(protected))) +
+  geom_sf(data = switzerland, fill = NA, colour = "red") +
+  facet_wrap(~plan) +
+  scale_fill_manual(values = c("0" = "grey90", "1" = "darkgreen"), name = "protected") +
+  coord_sf(crs = crs(grid)) +
+  theme_void()
+```
+
+Switzerland is outlined in red. Compare Plans 1 to 3: where do they agree, and where do they pull apart?
+
+## What does each plan hold?
+
+Every plan uses exactly 30% of the land, so the interesting columns are the others: what share of each layer does a plan hold?
+
+```{r}
+#| label: summary-table
+share_held <- function(sol, layer) {
+  global(sol * grid[[layer]], "sum", na.rm = TRUE)[[1]] /
+    global(grid[[layer]], "sum", na.rm = TRUE)[[1]]
+}
+
+summary_table <- lapply(plans, \(sol) {
+  tibble::tibble(
+    share_of_land = global(sol, "mean", na.rm = TRUE)[[1]],
+    richness_held = share_held(sol, "richness"),
+    carbon_held   = share_held(sol, "carbon"),
+    ncp_held      = share_held(sol, "ncp")
+  )
+}) |> bind_rows(.id = "plan")
+
+summary_table |> mutate(across(-plan, ~ round(.x, 2)))
+```
+
+# Your turn
+
+::: {.callout-note title="Tasks"}
+1. Look at Plan 4, which gives every layer the same weight. Does it hold about the same share of richness, carbon and NCP? Why not? (*Hint:* compare how the three layers are distributed; the plots above are a start, and so is the note on rescaling.) Which layer is a 30% budget most and least efficient for?
+2. In Plan 4, change the weights (try `richness = 3`, then `ncp = 3`). Which layer moves the map most? Was that what you expected?
+3. Change `budget` to 0.1 and 0.5. Is the gain from protecting more land steady or does it flatten out?
+4. Swap `data/Amphibians_RWR_2025.tif` in as the richness layer (same grid, same crop and mask code). It upweights small-range species. How do Plans 1 and 4 change?
+5. Invent a planning group (a national park agency, the farmers' union, a tourism board). Choose its weights, write one sentence on why, run `make_plan()`, and add it to the table.
+6. Compare rescaling choices for the all-three plan: (a) raw values, (b) 0-1 as above, (c) each layer divided by its Europe-wide total. Build each version of `features` yourself, solve, and compare the share of each layer held and how many cells differ. Which layer wins under each? Which would you defend to a planning group, and why?
+:::
+
+# Exercise: how many people?
+
+We left people out of the objective on purpose: we protected for nature first, and now we count who ends up inside. Population is the fourth layer.
+
+Population (GHS-POP 2020, JRC) is a global COG at about 90 m: `population/raw/ghs-pop-2020-cog.tif` in the same Source Cooperative folder. It is 11.6 GB, so the lazy, windowed read matters even more than it did for carbon.
+
+::: {.callout-note title="Your task"}
+Read population for Europe, put it on `grid`, and work out how many people live inside the protected cells of each of the four plans.
+
+*Hints:*
+
+- It is the carbon recipe again: open lazily, crop, `project()` onto the richness grid. Use an overview (`OVERVIEW_LEVEL=3` is 16 times coarser, about 1.5 km) so you do not read all 90 m pixels.
+- Population is a **count**, not a score. Which `method` adds people up as cells get bigger?
+- **A trap:** each overview pixel holds the *average* of the pixels it covers, not their total. Summing overview pixels therefore undercounts people by the number of pixels averaged (here 16 x 16). Check your answer: the countries in `grid` hold about 570 million people.
+- Keep population in **thousands** of people so the numbers stay readable.
+- Missing population is 0 on land and `NA` outside, exactly as before. Re-use `fill0()` and `mask()`.
+:::
+
+::: {.callout-note title="Solution" collapse="true"}
+```{r}
+#| label: population-solution
+pop_cog <- rast("/vsicurl/https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/population/raw/ghs-pop-2020-cog.tif",
+                opts = "OVERVIEW_LEVEL=3")
+# pop_cog <- rast("/vsicurl/https://data.source.coop/cboettig/population/raw/ghs-pop-2020-cog.tif",
+#                 opts = "OVERVIEW_LEVEL=3")
+pop_window <- crop(pop_cog, ext(bbox[c("xmin", "xmax", "ymin", "ymax")]))
+
+# Sum people into cells; overview pixels are averages of 16 x 16 pixels, so scale back up (and to thousands)
+population <- project(pop_window, richness, method = "sum") * 16^2 / 1000
+names(population) <- "population"
+
+grid <- c(grid[[c("richness", "carbon", "ncp")]], mask(fill0(population), grid[["richness"]]))
+
+# Total population on the grid, in millions (should be about 570)
+global(grid[["population"]], "sum", na.rm = TRUE)[[1]] / 1000
+
+# Millions of people inside each plan
+sapply(plans, \(sol) global(sol * grid[["population"]], "sum", na.rm = TRUE)[[1]]) / 1000
+```
+:::
+
+::: {.callout-note title="Questions"}
+1. Which plan has the most people inside it, and which the fewest? Population was never an objective, so is this a coincidence?
+2. What share of Europe's population is that, compared with the 30% of land? Who might welcome that, and who might object?
+3. Run `make_plan(richness = 1, carbon = 1, ncp = 1, population = 1)` (population as a fourth objective). How far does the map move, and what happens to the other three shares?
+:::
+
+# Exercise: which countries?
+
+Conservation targets are national commitments, but the optimizer above only sees one big map. How much of each solution sits in each country?
+
+::: {.callout-note title="Your task"}
+Build a raster `country` on `grid` in which each cell holds the ID of the country it is in (`rasterize()` on the polygon, `field = "id"`), then write a function `country_burden(sol)` that returns, per country, the number of land cells, the number protected, and the **share of the country's land** that is protected.
+
+Run it for Plan 4. Which countries carry the most protected land, in absolute terms and as a share of their own territory? Where is Switzerland?
+:::
+
+::: {.callout-note title="Solution" collapse="true"}
+```{r}
+#| label: country-solution
+europe_proj$id <- seq_len(nrow(europe_proj))
+country <- rasterize(europe_proj, grid, field = "id")
+
+country_burden <- function(sol) {
+  land <- zonal(uniform_cost, country, "sum", na.rm = TRUE)
+  protected <- zonal(sol * uniform_cost, country, "sum", na.rm = TRUE)
+  tibble::tibble(
+    country   = europe_proj$name[land$id],
+    cells     = land$cost,
+    protected = protected[[2]],
+    share     = protected[[2]] / land$cost
+  )
+}
+
+country_burden(plans[["4. all three"]]) |>
+  arrange(desc(share)) |>
+  mutate(share = round(share, 2))
+```
+:::
+
+::: {.callout-note title="Questions"}
+1. Plot the protected share by country for Plan 4. Is any country far above or below 30%? What is it about the layers that makes this happen?
+2. Do the four plans give the same ranking of countries? Which plan is most unequal?
+3. A cell is assigned by its centre. What does that do to small countries and to Switzerland's border?
+:::
+
+# Exercise: is the optimizer neutral?
+
+::: {.callout-note title="Reflection"}
+Write a short paragraph on where values entered even though you never told the solver to care about values: the layers, how they were rescaled, the 10 km grid, the 30% budget, the equal weights, treating missing cells as zero, using national borders as the unit of reporting, and who was left out of the polygon (Russia, microstates, overseas territories).
+:::
+
+# Optional extension A: burden sharing between countries
+
+A single European plan is *efficient*: it picks the 30% that holds the most benefit. But as the country exercise shows, a few countries may carry most of the protected land while others protect almost none. Who should give up land, and how should that be decided?
+
+::: {.callout-note title="Explore"}
+Design and compare at least two alternatives to the pooled plan (for example, every country protects its own 30%, or every country protects at least a minimum share), and measure what each one costs in richness, carbon and NCP. `make_problem()` returns the problem before it is solved, and `?add_linear_constraints` is a place to start.
+
+1. Which countries gain or lose under your rule compared with the pooled plan? Where does Switzerland sit?
+2. What is the "price" of fairness here, in benefit held?
+3. "Equal share of land" is one idea of fairness. Others: equal share of cost, share proportional to wealth or to benefits received, or credit for what a country has already protected. Pick one and say how you would encode it and what data you would need.
+:::
+
+# Optional extension B: what is already protected?
+
+Every plan above starts from a blank map. In reality much of Europe is already protected, which also changes the burden-sharing story: a country that already protects 25% has far less left to give than one with 5%.
+
+::: {.callout-note title="Explore"}
+The [World Database on Protected Areas (WDPA)](https://www.protectedplanet.net/) holds the boundaries of existing protected areas, and the `wdpar` package can download and clean them. Rasterise them onto `grid`, work out how much of each layer is already held, and re-run your plans with those cells **locked in** (see `?add_locked_in_constraints`).
+
+1. Which layer is least represented in existing protection? Which countries have already done most of their share?
+2. How different is the plan once you build on what exists?
+3. Is a cell protected on paper actually protected? What does WDPA not tell you?
+:::
+
+# Going further
+
+- `add_boundary_penalties()` rewards connected plans. Run it on Plan 4 and compare the benefit held by a connected plan versus the scattered one, at the same budget. At 58,000 cells it will be slow, so try a coarser grid first (`aggregate(grid, 3)`).
+- **Change the costs.** Real land is not uniformly priced. [EULOCC1K](https://doi.org/10.25829/xa7c12) (Spencer et al. 2025) gives European opportunity costs of conservation at 1 km, in €/ha/yr. Download the netCDF from the [EBV Data Portal](https://portal.geobon.org/ebv-detail?id=78&v=2), `project()` it onto `grid` (it is EPSG:3035), and pass it as `cost`; the budget is then 30% of total *cost* rather than 30% of cells. The Z-score version is built to equalise the burden between countries, which connects directly to Extension A. Is "cost" a different kind of variable from the benefits?
+
+## Read more
+
+- IUCN (2025). [Red List spatial data](https://www.iucnredlist.org/resources/spatial-data-download). Terms of use are in `data/`.
+- Noon, M. L. et al. (2022). [Mapping the irrecoverable carbon in Earth's ecosystems](https://doi.org/10.1038/s41558-021-01198-0). *Nature Climate Change*.
+- Chaplin-Kramer, R. et al. (2019). [Global modeling of nature's contributions to people](https://doi.org/10.1126/science.aaw3372). *Science*.
+- Spencer, D. et al. (2025). [EULOCC1K](https://doi.org/10.25829/xa7c12). *Scientific Data*.
+- UNEP-WCMC and IUCN. [Protected Planet / WDPA](https://www.protectedplanet.net/).
+- Hanson, J. O. et al. [`prioritizr`](https://prioritizr.net/) documentation.
+
+## When something fails
+
+- **Carbon is all `NA`.** You used `resample()` instead of `project()`, or cropped the COG with a box in the wrong CRS.
+- **Carbon is full of speckled holes.** Check the `method` in `project()`: you want to aggregate, not interpolate.
+- **Richness crop returns one cell.** The box was in degrees and the raster is in metres.
+- **`solve()` fails a presolve check.** Does at least one layer have a weight above 0? Is the budget big enough to hold any locked-in cells or country floors? Are there `NA` cells in the features that are not `NA` in the cost?
+- **Network timeouts on the pulls.** Use `rast("cache/europe_grid.tif")`.
